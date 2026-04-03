@@ -132,9 +132,11 @@ def query_api(api_key: str, search_type: str, query: str, timeout: int = 90) -> 
                     }
 
                 # ── Step 4: Follow the redirect URL with the solved cookie ─────
+                # Pass cookie directly in the Cookie header to avoid requests'
+                # domain-matching dropping it silently.
                 # Server processes during this request; takes 10-20s to respond.
-                session.cookies.set("__test", cookie_val, domain="sixeye.fwh.is")
-                resp2 = session.get(redirect_url, timeout=timeout)
+                cookie_headers = {**HEADERS, "Cookie": f"__test={cookie_val}"}
+                resp2 = session.get(redirect_url, timeout=timeout, headers=cookie_headers)
                 resp2.raise_for_status()
                 body = resp2.text.strip()
 
