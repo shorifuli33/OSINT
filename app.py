@@ -221,23 +221,43 @@ def strength_color(label: str) -> str:
     return colors.get(label, "#888")
 
 
-def classify_records(records: list, org_domains: list) -> list:
-    """Add 'type' and 'strength' fields to each record."""
+ADMIN_PATTERNS = [
+    "admin", "wp-admin", "administrator", "dashboard", "controlpanel",
+    "cpanel", "manager", "backend", "management", "login", "signin",
+    "staff", "moderator", "superuser", "root", "panel",
+]
+
+
+def classify_records(records: list, org_domains: list, search_query: str = "") -> list:
+    """Add 'type', 'is_admin_url', and 'strength' fields to each record."""
     enriched = []
+    # Build a set of domain fragments to match against (include the search query itself)
+    domains = [d.lower().strip() for d in org_domains if d.strip()]
+    if search_query:
+        # Also derive root domain from the query (e.g. shajgoj from shajgoj.com)
+        root = search_query.lower().split(".")[0]
+        if root not in domains:
+            domains.append(root)
+
     for r in records:
         rec = dict(r)
         username = rec.get("username", "").lower()
         url = rec.get("url", "").lower()
         password = rec.get("password", "")
 
-        # Employee detection
-        is_emp = any(
-            d.lower() in username or d.lower() in url
-            for d in org_domains if d.strip()
-        )
-        rec["type"] = "Employee" if is_emp else "User"
+        # ── Employee detection ──────────────────────────────────────────────
+        # 1. Username/email contains the org domain
+        email_match = any(d in username for d in domains)
+        # 2. URL contains the org domain (their own site)
+        url_domain_match = any(d in url for d in domains)
+        # 3. URL contains an admin-panel path
+        is_admin_url = any(pat in url for pat in ADMIN_PATTERNS)
 
-        # Password strength
+        is_emp = email_match or (url_domain_match and is_admin_url)
+        rec["type"] = "Employee" if is_emp else "User"
+        rec["is_admin_url"] = is_admin_url
+
+        # ── Password strength ───────────────────────────────────────────────
         strength = evaluate_password(password)
         rec["strength"] = strength["label"]
         rec["strength_color"] = strength["color"]
@@ -531,7 +551,7 @@ def page_search():
             return
 
         # Classify & enrich
-        records = classify_records(raw_records, org_domains)
+        records = classify_records(raw_records, org_domains, search_query=query.strip())
         emp_records = [r for r in records if r["type"] == "Employee"]
         user_records = [r for r in records if r["type"] == "User"]
 
@@ -637,24 +657,50 @@ def page_search():
         st.json(raw if raw else {"note": "No raw response stored."})
         st.caption("Use this to verify the API response format if results look wrong.")
 
+    # ── Derived subsets ──
+    admin_records  = [r for r in records if r.get("is_admin_url")]
+    unique_email_map = {}
+    for r in records:
+        u = r.get("username", "").strip()
+        if u and "@" in u:
+            unique_email_map.setdefault(u, r)
+    unique_emails = list(unique_email_map.values())
+
+    unique_domain_map = {}
+    for r in records:
+        url_val = r.get("url", "").strip()
+        if url_val:
+            try:
+                from urllib.parse import urlparse
+                domain = urlparse(url_val).netloc or url_val.split("/")[0]
+            except Exception:
+                domain = url_val.split("/")[0]
+            domain = domain.lower().replace("www.", "")
+            if domain:
+                unique_domain_map.setdefault(domain, {"domain": domain, "sample_url": url_val, "count": 0})
+                unique_domain_map[domain]["count"] += 1
+
     # ── Results table ──
     st.markdown('<div class="section-header">RESULTS</div>', unsafe_allow_html=True)
 
-    tab_all, tab_emp, tab_usr = st.tabs([
+    tab_all, tab_emp, tab_usr, tab_admin, tab_emails, tab_domains = st.tabs([
         f"All ({len(records)})",
-        f"Employees ({len(emp_records)})",
-        f"Users ({len(user_records)})",
+        f"👔 Employees ({len(emp_records)})",
+        f"👤 Users ({len(user_records)})",
+        f"🔴 Admin URLs ({len(admin_records)})",
+        f"📧 Unique Emails ({len(unique_emails)})",
+        f"🌐 Unique Domains ({len(unique_domain_map)})",
     ])
 
-    def render_table(data: list):
+    def render_table(data: list, tab_key: str = ""):
         if not data:
             st.info("No records in this category.")
             return
 
-        # Filter bar
-        filter_text = st.text_input("🔎 Filter rows (username / password / url)...",
-                                    key=f"filter_{id(data)}", label_visibility="collapsed")
-
+        filter_text = st.text_input("🔎 Filter...",
+                                    key=f"filter_{tab_key}",
+                                    label_visibility="collapsed",
+                                    placeholder="Filter by username / password / url")
         df_data = []
         for r in data:
             if filter_text:
@@ -675,10 +721,8 @@ def page_search():
 
         df = pd.DataFrame(df_data)
 
-        # Colour-code strength column using pandas Styler
         def color_strength(val):
-            c = strength_color(val)
-            return f"color: {c}; font-weight: 700"
+            return f"color: {strength_color(val)}; font-weight: 700"
 
         styled = df.style.applymap(color_strength, subset=["Strength"])
         st.dataframe(styled, use_container_width=True, height=420,
@@ -689,15 +733,42 @@ def page_search():
                          "Type": st.column_config.TextColumn("Type", width="small"),
                          "Strength": st.column_config.TextColumn("Strength", width="small"),
                      })
-
         st.caption(f"Showing {len(df_data)} of {len(data)} records")
 
     with tab_all:
-        render_table(records)
+        render_table(records, "all")
     with tab_emp:
-        render_table(emp_records)
+        render_table(emp_records, "emp")
     with tab_usr:
-        render_table(user_records)
+        render_table(user_records, "usr")
+    with tab_admin:
+        if admin_records:
+            st.markdown("""
+            <div class="risk-banner" style="font-size:12px; padding:8px 14px;">
+                🔴 These credentials were found on admin/backend URLs — high risk accounts.
+            </div>""", unsafe_allow_html=True)
+        render_table(admin_records, "admin")
+    with tab_emails:
+        if unique_emails:
+            st.caption(f"{len(unique_emails)} unique email addresses found across all results.")
+        render_table(unique_emails, "emails")
+    with tab_domains:
+        if unique_domain_map:
+            domain_rows = sorted(unique_domain_map.values(), key=lambda x: -x["count"])
+            df_dom = pd.DataFrame([{
+                "Domain": d["domain"],
+                "Breach Count": d["count"],
+                "Sample URL": d["sample_url"],
+            } for d in domain_rows])
+            st.dataframe(df_dom, use_container_width=True, height=420,
+                         column_config={
+                             "Domain": st.column_config.TextColumn("Domain", width="medium"),
+                             "Breach Count": st.column_config.NumberColumn("Breach Count", width="small"),
+                             "Sample URL": st.column_config.TextColumn("Sample URL", width="large"),
+                         })
+            st.caption(f"{len(domain_rows)} unique domains")
+        else:
+            st.info("No domain data available.")
 
 
 # ── History Page ─────────────────────────────────────────────────────────────
