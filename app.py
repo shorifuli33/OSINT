@@ -513,7 +513,7 @@ def page_search():
 
     if run_search and query.strip():
         api_type = "email" if "Email" in search_type else "url"
-        with st.spinner(f"🔎 Querying ZeroLeak API for **{query.strip()}**..."):
+        with st.spinner(f"🔎 Querying ZeroLeak API for **{query.strip()}** — this may take 10–15 seconds..."):
             result = query_api(api_key, api_type, query.strip())
 
         if not result["success"]:

@@ -1,22 +1,22 @@
 """
 Nahidx001 - SixEye ZeroLeak API Client
-Handles all communication with the ZeroLeak API endpoint.
+Handles AES JS-challenge bypass and communication with the ZeroLeak API.
 """
 
+import re
 import time
 import requests
 
 
 API_BASE = "https://sixeye.fwh.is/zeroleakapi.php"
 
-# Browser-like headers to avoid being blocked by the API server
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/124.0.0.0 Safari/537.36"
     ),
-    "Accept": "application/json, text/plain, */*",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
     "Accept-Encoding": "gzip, deflate, br",
     "Referer": "https://sixeye.fwh.is/",
@@ -24,15 +24,51 @@ HEADERS = {
 }
 
 
-def query_api(api_key: str, search_type: str, query: str, timeout: int = 45) -> dict:
+def _solve_aes_challenge(html: str) -> str:
     """
-    Query the SixEye ZeroLeak API with retry logic.
+    Parse the slowAES JS challenge and compute the __test cookie value.
+
+    The page contains:
+        var a = toNumbers("IV_HEX")
+        var b = toNumbers("KEY_HEX")
+        var c = toNumbers("CIPHERTEXT_HEX")
+        slowAES.decrypt(c, 2, a, b)  →  cookie = hex(AES-CBC-decrypt(c, key=b, iv=a))
+    """
+    matches = re.findall(r'toNumbers\("([0-9a-fA-F]+)"\)', html)
+    if len(matches) < 3:
+        return ""
+    iv_hex, key_hex, ct_hex = matches[0], matches[1], matches[2]
+    try:
+        from Crypto.Cipher import AES
+        key = bytes.fromhex(key_hex)
+        iv  = bytes.fromhex(iv_hex)
+        ct  = bytes.fromhex(ct_hex)
+        cipher = AES.new(key, AES.MODE_CBC, iv)
+        return cipher.decrypt(ct).hex()
+    except Exception:
+        return ""
+
+
+def _build_session() -> requests.Session:
+    s = requests.Session()
+    s.headers.update(HEADERS)
+    return s
+
+
+def query_api(api_key: str, search_type: str, query: str, timeout: int = 60) -> dict:
+    """
+    Query the SixEye ZeroLeak API.
+
+    Automatically handles the AES JS anti-bot challenge:
+      1. GET the API URL → receive JS challenge page
+      2. Solve AES decryption to obtain __test cookie
+      3. GET the API URL again with cookie + &i=1 → real data
 
     Args:
-        api_key: The API authentication key.
-        search_type: Either 'url' or 'email'.
-        query: The domain or email to search.
-        timeout: Request timeout in seconds.
+        api_key:     The API authentication key.
+        search_type: 'url' or 'email'.
+        query:       Domain or email to search.
+        timeout:     Per-request timeout in seconds (default 60).
 
     Returns:
         dict with keys: success (bool), data (list), error (str|None), raw (dict)
@@ -40,57 +76,70 @@ def query_api(api_key: str, search_type: str, query: str, timeout: int = 45) -> 
     params = {"key": api_key, search_type: query}
     last_error = "Unknown error"
 
-    # Retry up to 3 times with exponential backoff
     for attempt in range(3):
         if attempt > 0:
-            time.sleep(2 ** attempt)  # 2s, 4s
+            time.sleep(2 ** attempt)
 
         try:
-            session = requests.Session()
-            session.headers.update(HEADERS)
+            session = _build_session()
 
-            resp = session.get(API_BASE, params=params, timeout=timeout)
+            # ── Step 1: Initial request (may return JS challenge) ──────────
+            resp1 = session.get(API_BASE, params=params, timeout=timeout)
 
-            # Some APIs return 200 with error body — handle both paths
-            if resp.status_code == 403:
+            if resp1.status_code == 403:
                 return {
-                    "success": False,
-                    "data": [],
-                    "error": (
-                        "API returned 403 Forbidden. The server may be blocking "
-                        "cloud-hosted requests. Try running the app locally."
-                    ),
+                    "success": False, "data": [],
+                    "error": "API returned 403 Forbidden. The server is blocking this IP.",
                     "raw": {},
                 }
 
-            resp.raise_for_status()
+            resp1.raise_for_status()
 
-            # Try JSON first
+            # ── Step 2: Detect and solve JS challenge ──────────────────────
+            body = resp1.text.strip()
+            cookie_val = ""
+
+            if "slowAES" in body or "__test" in body:
+                cookie_val = _solve_aes_challenge(body)
+                if not cookie_val:
+                    return {
+                        "success": False, "data": [],
+                        "error": "Failed to solve anti-bot challenge.",
+                        "raw": {"text": body},
+                    }
+
+                # ── Step 3: Real request with cookie + &i=1 ───────────────
+                real_params = dict(params)
+                real_params["i"] = "1"
+                session.cookies.set("__test", cookie_val, domain="sixeye.fwh.is")
+                resp2 = session.get(API_BASE, params=real_params, timeout=timeout)
+                resp2.raise_for_status()
+                body = resp2.text.strip()
+
+            # ── Step 4: Parse response ─────────────────────────────────────
+            # Try JSON
             try:
-                raw = resp.json()
+                import json
+                raw = json.loads(body)
                 records = _normalise_response(raw)
                 return {"success": True, "data": records, "error": None, "raw": raw}
-            except ValueError:
+            except (ValueError, json.JSONDecodeError):
                 pass
 
-            # Fall back to plain-text parsing
-            text = resp.text.strip()
-            if text:
-                records = _parse_text_response(text)
-                raw = {"text": text}
-                return {"success": True, "data": records, "error": None, "raw": raw}
+            # Plain text fallback
+            if body:
+                records = _parse_text_response(body)
+                return {"success": True, "data": records, "error": None, "raw": {"text": body}}
 
             return {"success": True, "data": [], "error": None, "raw": {}}
 
         except requests.exceptions.Timeout:
-            last_error = f"Request timed out (attempt {attempt + 1}/3)."
+            last_error = f"Request timed out (attempt {attempt + 1}/3). The API is slow — try again."
         except requests.exceptions.ConnectionError as e:
             last_error = f"Connection error: {e}"
         except requests.exceptions.HTTPError as e:
-            # Non-retryable HTTP errors
             return {
-                "success": False,
-                "data": [],
+                "success": False, "data": [],
                 "error": f"HTTP {e.response.status_code}: {e.response.reason}",
                 "raw": {},
             }
@@ -100,6 +149,8 @@ def query_api(api_key: str, search_type: str, query: str, timeout: int = 45) -> 
     return {"success": False, "data": [], "error": last_error, "raw": {}}
 
 
+# ── Response normalisers ────────────────────────────────────────────────────
+
 def _normalise_response(raw) -> list:
     """Normalise various API response formats into a list of credential dicts."""
     records = []
@@ -108,24 +159,24 @@ def _normalise_response(raw) -> list:
         for item in raw:
             records.append(_normalise_record(item))
     elif isinstance(raw, dict):
-        # Check common wrapper keys first
+        # Check common wrapper keys
         for key in ("data", "results", "records", "leaks", "breaches", "credentials", "items"):
             if key in raw and isinstance(raw[key], list):
                 for item in raw[key]:
                     records.append(_normalise_record(item))
                 return records
-        # If dict has a single key whose value is a list, unwrap it
+        # Single-key dict whose value is a list
         list_values = [(k, v) for k, v in raw.items() if isinstance(v, list)]
         if len(list_values) == 1:
             for item in list_values[0][1]:
                 records.append(_normalise_record(item))
             return records
-        # Single record dict
+        # Single record
         records.append(_normalise_record(raw))
     elif isinstance(raw, str):
         records = _parse_text_response(raw)
 
-    return [r for r in records if any(r.values())]  # drop fully empty records
+    return [r for r in records if any(r.values())]
 
 
 def _normalise_record(item) -> dict:
@@ -134,25 +185,22 @@ def _normalise_record(item) -> dict:
         return _parse_credential_line(item)
 
     if isinstance(item, dict):
-        # Username: try every common key name
         username = (
             item.get("username") or item.get("email") or item.get("login")
             or item.get("user") or item.get("name") or item.get("account")
             or item.get("mail") or item.get("uname") or ""
         )
-        # Password: try every common key name
         password = (
             item.get("password") or item.get("pass") or item.get("pwd")
-            or item.get("passwd") or item.get("secret") or item.get("credential") or ""
+            or item.get("passwd") or item.get("secret") or ""
         )
-        # URL / source
         url = (
             item.get("url") or item.get("domain") or item.get("source")
             or item.get("site") or item.get("origin") or item.get("host")
             or item.get("leak_source") or item.get("database") or ""
         )
 
-        # If the dict has none of the expected keys, dump all values as raw text
+        # No known keys — dump all values and try to parse
         if not username and not password and not url:
             values = [str(v) for v in item.values() if v]
             raw_line = " | ".join(values)
@@ -167,8 +215,8 @@ def _normalise_record(item) -> dict:
 
 def _parse_credential_line(line: str) -> dict:
     """
-    Parse a single credential line. Handles formats:
-      url:user:pass
+    Parse a single credential line. Handles:
+      https://url:port/path:user:pass
       user:pass
       user@domain:pass
     """
@@ -178,9 +226,8 @@ def _parse_credential_line(line: str) -> dict:
 
     parts = line.split(":")
 
-    # Format: http://url:port/path:user:pass  (starts with http/https)
+    # Starts with http/https — reconstruct URL
     if len(parts) >= 3 and parts[0].lower() in ("http", "https"):
-        # Reconstruct URL (parts[0]:parts[1] = http://domain)
         url_part = f"{parts[0]}:{parts[1]}"
         remaining = parts[2:]
         if len(remaining) >= 2:
@@ -191,7 +238,6 @@ def _parse_credential_line(line: str) -> dict:
             }
         return {"url": url_part, "username": remaining[0].strip() if remaining else "", "password": ""}
 
-    # Format: user:pass
     if len(parts) >= 2:
         return {
             "username": parts[0].strip(),
@@ -207,7 +253,6 @@ def _parse_text_response(text: str) -> list:
     records = []
     for line in text.strip().splitlines():
         line = line.strip()
-        if not line:
-            continue
-        records.append(_parse_credential_line(line))
+        if line:
+            records.append(_parse_credential_line(line))
     return records
