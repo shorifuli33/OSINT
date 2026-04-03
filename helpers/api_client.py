@@ -3,17 +3,30 @@ Nahidx001 - SixEye ZeroLeak API Client
 Handles all communication with the ZeroLeak API endpoint.
 """
 
+import time
 import requests
-import streamlit as st
-from typing import Optional
 
 
 API_BASE = "https://sixeye.fwh.is/zeroleakapi.php"
 
+# Browser-like headers to avoid being blocked by the API server
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Referer": "https://sixeye.fwh.is/",
+    "Connection": "keep-alive",
+}
 
-def query_api(api_key: str, search_type: str, query: str, timeout: int = 30) -> dict:
+
+def query_api(api_key: str, search_type: str, query: str, timeout: int = 45) -> dict:
     """
-    Query the SixEye ZeroLeak API.
+    Query the SixEye ZeroLeak API with retry logic.
 
     Args:
         api_key: The API authentication key.
@@ -25,36 +38,66 @@ def query_api(api_key: str, search_type: str, query: str, timeout: int = 30) -> 
         dict with keys: success (bool), data (list), error (str|None), raw (dict)
     """
     params = {"key": api_key, search_type: query}
+    last_error = "Unknown error"
 
-    try:
-        resp = requests.get(API_BASE, params=params, timeout=timeout)
-        resp.raise_for_status()
-        raw = resp.json()
+    # Retry up to 3 times with exponential backoff
+    for attempt in range(3):
+        if attempt > 0:
+            time.sleep(2 ** attempt)  # 2s, 4s
 
-        # The API may return data in different structures.
-        # We normalise to a flat list of credential dicts.
-        records = _normalise_response(raw)
-
-        return {"success": True, "data": records, "error": None, "raw": raw}
-
-    except requests.exceptions.Timeout:
-        return {"success": False, "data": [], "error": "Request timed out. Try again.", "raw": {}}
-    except requests.exceptions.ConnectionError:
-        return {"success": False, "data": [], "error": "Connection error. Check your network.", "raw": {}}
-    except requests.exceptions.HTTPError as e:
-        return {"success": False, "data": [], "error": f"HTTP {e.response.status_code}: {e.response.reason}", "raw": {}}
-    except ValueError:
-        # Non-JSON response - try to parse as text lines
         try:
+            session = requests.Session()
+            session.headers.update(HEADERS)
+
+            resp = session.get(API_BASE, params=params, timeout=timeout)
+
+            # Some APIs return 200 with error body — handle both paths
+            if resp.status_code == 403:
+                return {
+                    "success": False,
+                    "data": [],
+                    "error": (
+                        "API returned 403 Forbidden. The server may be blocking "
+                        "cloud-hosted requests. Try running the app locally."
+                    ),
+                    "raw": {},
+                }
+
+            resp.raise_for_status()
+
+            # Try JSON first
+            try:
+                raw = resp.json()
+                records = _normalise_response(raw)
+                return {"success": True, "data": records, "error": None, "raw": raw}
+            except ValueError:
+                pass
+
+            # Fall back to plain-text parsing
             text = resp.text.strip()
             if text:
                 records = _parse_text_response(text)
-                return {"success": True, "data": records, "error": None, "raw": {"text": text}}
-        except Exception:
-            pass
-        return {"success": False, "data": [], "error": "Invalid response from API.", "raw": {}}
-    except Exception as e:
-        return {"success": False, "data": [], "error": str(e), "raw": {}}
+                raw = {"text": text}
+                return {"success": True, "data": records, "error": None, "raw": raw}
+
+            return {"success": True, "data": [], "error": None, "raw": {}}
+
+        except requests.exceptions.Timeout:
+            last_error = f"Request timed out (attempt {attempt + 1}/3)."
+        except requests.exceptions.ConnectionError as e:
+            last_error = f"Connection error: {e}"
+        except requests.exceptions.HTTPError as e:
+            # Non-retryable HTTP errors
+            return {
+                "success": False,
+                "data": [],
+                "error": f"HTTP {e.response.status_code}: {e.response.reason}",
+                "raw": {},
+            }
+        except Exception as e:
+            last_error = str(e)
+
+    return {"success": False, "data": [], "error": last_error, "raw": {}}
 
 
 def _normalise_response(raw) -> list:
