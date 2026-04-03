@@ -55,20 +55,21 @@ def _build_session() -> requests.Session:
     return s
 
 
-def query_api(api_key: str, search_type: str, query: str, timeout: int = 60) -> dict:
+def query_api(api_key: str, search_type: str, query: str, timeout: int = 90) -> dict:
     """
     Query the SixEye ZeroLeak API.
 
     Automatically handles the AES JS anti-bot challenge:
       1. GET the API URL → receive JS challenge page
       2. Solve AES decryption to obtain __test cookie
-      3. GET the API URL again with cookie + &i=1 → real data
+      3. Wait 12 seconds for the server to process
+      4. GET the API URL again with cookie + &i=1 → real data
 
     Args:
         api_key:     The API authentication key.
         search_type: 'url' or 'email'.
         query:       Domain or email to search.
-        timeout:     Per-request timeout in seconds (default 60).
+        timeout:     Per-request timeout in seconds (default 90).
 
     Returns:
         dict with keys: success (bool), data (list), error (str|None), raw (dict)
@@ -78,7 +79,7 @@ def query_api(api_key: str, search_type: str, query: str, timeout: int = 60) -> 
 
     for attempt in range(3):
         if attempt > 0:
-            time.sleep(2 ** attempt)
+            time.sleep(5)   # wait 5s between retries (not exponential — API is just slow)
 
         try:
             session = _build_session()
@@ -108,7 +109,11 @@ def query_api(api_key: str, search_type: str, query: str, timeout: int = 60) -> 
                         "raw": {"text": body},
                     }
 
-                # ── Step 3: Real request with cookie + &i=1 ───────────────
+                # ── Step 3: Wait for server-side processing ────────────────
+                # The API takes 10-12 seconds to process after the challenge.
+                time.sleep(12)
+
+                # ── Step 4: Real request with cookie + &i=1 ───────────────
                 real_params = dict(params)
                 real_params["i"] = "1"
                 session.cookies.set("__test", cookie_val, domain="sixeye.fwh.is")
