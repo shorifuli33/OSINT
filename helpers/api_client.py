@@ -108,57 +108,106 @@ def _normalise_response(raw) -> list:
         for item in raw:
             records.append(_normalise_record(item))
     elif isinstance(raw, dict):
-        # Check common wrapper keys
-        for key in ("data", "results", "records", "leaks", "breaches"):
+        # Check common wrapper keys first
+        for key in ("data", "results", "records", "leaks", "breaches", "credentials", "items"):
             if key in raw and isinstance(raw[key], list):
                 for item in raw[key]:
                     records.append(_normalise_record(item))
                 return records
-        # Single record
-        if any(k in raw for k in ("username", "email", "password", "url")):
-            records.append(_normalise_record(raw))
+        # If dict has a single key whose value is a list, unwrap it
+        list_values = [(k, v) for k, v in raw.items() if isinstance(v, list)]
+        if len(list_values) == 1:
+            for item in list_values[0][1]:
+                records.append(_normalise_record(item))
+            return records
+        # Single record dict
+        records.append(_normalise_record(raw))
     elif isinstance(raw, str):
         records = _parse_text_response(raw)
 
-    return records
+    return [r for r in records if any(r.values())]  # drop fully empty records
 
 
 def _normalise_record(item) -> dict:
     """Normalise a single record into a standard dict."""
     if isinstance(item, str):
-        parts = item.split(":")
-        if len(parts) >= 2:
-            return {
-                "username": parts[0].strip(),
-                "password": ":".join(parts[1:]).strip(),
-                "url": "",
-            }
-        return {"username": item.strip(), "password": "", "url": ""}
+        return _parse_credential_line(item)
 
     if isinstance(item, dict):
-        return {
-            "username": item.get("username") or item.get("email") or item.get("login") or item.get("user") or "",
-            "password": item.get("password") or item.get("pass") or item.get("pwd") or "",
-            "url": item.get("url") or item.get("domain") or item.get("source") or item.get("site") or "",
-        }
+        # Username: try every common key name
+        username = (
+            item.get("username") or item.get("email") or item.get("login")
+            or item.get("user") or item.get("name") or item.get("account")
+            or item.get("mail") or item.get("uname") or ""
+        )
+        # Password: try every common key name
+        password = (
+            item.get("password") or item.get("pass") or item.get("pwd")
+            or item.get("passwd") or item.get("secret") or item.get("credential") or ""
+        )
+        # URL / source
+        url = (
+            item.get("url") or item.get("domain") or item.get("source")
+            or item.get("site") or item.get("origin") or item.get("host")
+            or item.get("leak_source") or item.get("database") or ""
+        )
+
+        # If the dict has none of the expected keys, dump all values as raw text
+        if not username and not password and not url:
+            values = [str(v) for v in item.values() if v]
+            raw_line = " | ".join(values)
+            return _parse_credential_line(raw_line) if ":" in raw_line else {
+                "username": raw_line, "password": "", "url": ""
+            }
+
+        return {"username": str(username), "password": str(password), "url": str(url)}
 
     return {"username": str(item), "password": "", "url": ""}
 
 
+def _parse_credential_line(line: str) -> dict:
+    """
+    Parse a single credential line. Handles formats:
+      url:user:pass
+      user:pass
+      user@domain:pass
+    """
+    line = line.strip()
+    if not line:
+        return {"username": "", "password": "", "url": ""}
+
+    parts = line.split(":")
+
+    # Format: http://url:port/path:user:pass  (starts with http/https)
+    if len(parts) >= 3 and parts[0].lower() in ("http", "https"):
+        # Reconstruct URL (parts[0]:parts[1] = http://domain)
+        url_part = f"{parts[0]}:{parts[1]}"
+        remaining = parts[2:]
+        if len(remaining) >= 2:
+            return {
+                "url": url_part,
+                "username": remaining[0].strip(),
+                "password": ":".join(remaining[1:]).strip(),
+            }
+        return {"url": url_part, "username": remaining[0].strip() if remaining else "", "password": ""}
+
+    # Format: user:pass
+    if len(parts) >= 2:
+        return {
+            "username": parts[0].strip(),
+            "password": ":".join(parts[1:]).strip(),
+            "url": "",
+        }
+
+    return {"username": line, "password": "", "url": ""}
+
+
 def _parse_text_response(text: str) -> list:
-    """Parse plain-text credential dumps (user:pass or user:pass@url per line)."""
+    """Parse plain-text credential dumps (one credential per line)."""
     records = []
     for line in text.strip().splitlines():
         line = line.strip()
         if not line:
             continue
-        parts = line.split(":")
-        if len(parts) >= 2:
-            records.append({
-                "username": parts[0].strip(),
-                "password": ":".join(parts[1:]).strip(),
-                "url": "",
-            })
-        else:
-            records.append({"username": line, "password": "", "url": ""})
+        records.append(_parse_credential_line(line))
     return records

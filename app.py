@@ -543,6 +543,7 @@ def page_search():
         st.session_state["last_results"] = records
         st.session_state["last_query"] = query.strip()
         st.session_state["last_search_type"] = api_type
+        st.session_state["last_raw"] = result["raw"]
 
     # Display results
     records = st.session_state.get("last_results", [])
@@ -608,6 +609,12 @@ def page_search():
                            mime="text/html",
                            help="Open in browser → Ctrl+P → Save as PDF",
                            use_container_width=True)
+
+    # ── Raw response debug expander ──
+    with st.expander("🔧 Raw API Response (debug)", expanded=False):
+        raw = st.session_state.get("last_raw", {})
+        st.json(raw if raw else {"note": "No raw response stored."})
+        st.caption("Use this to verify the API response format if results look wrong.")
 
     # ── Results table ──
     st.markdown('<div class="section-header">RESULTS</div>', unsafe_allow_html=True)
