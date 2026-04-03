@@ -239,19 +239,23 @@ def _normalise_record(item) -> dict:
         return _parse_credential_line(item)
 
     if isinstance(item, dict):
+        # Normalise all keys to lowercase for case-insensitive matching
+        # API returns "Username", "Password", "URL" (capitalised)
+        d = {k.lower(): v for k, v in item.items()}
+
         username = (
-            item.get("username") or item.get("email") or item.get("login")
-            or item.get("user") or item.get("name") or item.get("account")
-            or item.get("mail") or item.get("uname") or ""
+            d.get("username") or d.get("email") or d.get("login")
+            or d.get("user") or d.get("name") or d.get("account")
+            or d.get("mail") or d.get("uname") or ""
         )
         password = (
-            item.get("password") or item.get("pass") or item.get("pwd")
-            or item.get("passwd") or item.get("secret") or ""
+            d.get("password") or d.get("pass") or d.get("pwd")
+            or d.get("passwd") or d.get("secret") or ""
         )
         url = (
-            item.get("url") or item.get("domain") or item.get("source")
-            or item.get("site") or item.get("origin") or item.get("host")
-            or item.get("leak_source") or item.get("database") or ""
+            d.get("url") or d.get("domain") or d.get("source")
+            or d.get("site") or d.get("origin") or d.get("host")
+            or d.get("leak_source") or d.get("database") or ""
         )
 
         # No known keys — dump all values and try to parse
