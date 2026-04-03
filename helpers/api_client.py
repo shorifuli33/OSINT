@@ -49,6 +49,16 @@ def _solve_aes_challenge(html: str) -> str:
         return ""
 
 
+def _extract_redirect_url(html: str) -> str:
+    """
+    Extract the redirect URL from the JS challenge's location.href statement.
+    e.g.: location.href="https://sixeye.fwh.is/zeroleakapi.php?key=...&i=2"
+    The `i` parameter is dynamic so we must read it from the page.
+    """
+    match = re.search(r'location\.href\s*=\s*["\']([^"\']+)["\']', html)
+    return match.group(1) if match else ""
+
+
 def _build_session() -> requests.Session:
     s = requests.Session()
     s.headers.update(HEADERS)
@@ -109,13 +119,22 @@ def query_api(api_key: str, search_type: str, query: str, timeout: int = 90) -> 
                         "raw": {"text": body},
                     }
 
-                # ── Step 3: Real request with cookie + &i=1 ───────────────
-                # The server processes during this request and takes 10-20s to respond.
-                # We just keep the connection open with a long timeout — no sleep needed.
-                real_params = dict(params)
-                real_params["i"] = "1"
+                # ── Step 3: Extract the exact redirect URL from location.href ──
+                # The JS contains: location.href="https://...&i=N"
+                # The `i` value is dynamic (increments per request), so we must
+                # read it from the JS rather than hardcoding &i=1.
+                redirect_url = _extract_redirect_url(body)
+                if not redirect_url:
+                    return {
+                        "success": False, "data": [],
+                        "error": "Could not extract redirect URL from challenge page.",
+                        "raw": {"text": body},
+                    }
+
+                # ── Step 4: Follow the redirect URL with the solved cookie ─────
+                # Server processes during this request; takes 10-20s to respond.
                 session.cookies.set("__test", cookie_val, domain="sixeye.fwh.is")
-                resp2 = session.get(API_BASE, params=real_params, timeout=timeout)
+                resp2 = session.get(redirect_url, timeout=timeout)
                 resp2.raise_for_status()
                 body = resp2.text.strip()
 
