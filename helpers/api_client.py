@@ -109,11 +109,9 @@ def query_api(api_key: str, search_type: str, query: str, timeout: int = 90) -> 
                         "raw": {"text": body},
                     }
 
-                # ── Step 3: Wait for server-side processing ────────────────
-                # The API takes 10-12 seconds to process after the challenge.
-                time.sleep(12)
-
-                # ── Step 4: Real request with cookie + &i=1 ───────────────
+                # ── Step 3: Real request with cookie + &i=1 ───────────────
+                # The server processes during this request and takes 10-20s to respond.
+                # We just keep the connection open with a long timeout — no sleep needed.
                 real_params = dict(params)
                 real_params["i"] = "1"
                 session.cookies.set("__test", cookie_val, domain="sixeye.fwh.is")
