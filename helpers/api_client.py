@@ -141,21 +141,32 @@ def query_api(api_key: str, search_type: str, query: str, timeout: int = 90) -> 
                 body = resp2.text.strip()
 
             # ── Step 4: Parse response ─────────────────────────────────────
-            # Try JSON
             try:
                 import json
                 raw = json.loads(body)
                 records = _normalise_response(raw)
-                return {"success": True, "data": records, "error": None, "raw": raw}
+                # Extract useful metadata from the response
+                api_info = raw.get("api_info", {})
+                rate_limit = raw.get("rate_limit", {})
+                total = raw.get("results", {}).get("total", len(records)) if isinstance(raw.get("results"), dict) else len(records)
+                return {
+                    "success": True,
+                    "data": records,
+                    "error": None,
+                    "raw": raw,
+                    "api_info": api_info,
+                    "rate_limit": rate_limit,
+                    "total": total,
+                }
             except (ValueError, json.JSONDecodeError):
                 pass
 
             # Plain text fallback
             if body:
                 records = _parse_text_response(body)
-                return {"success": True, "data": records, "error": None, "raw": {"text": body}}
+                return {"success": True, "data": records, "error": None, "raw": {"text": body}, "api_info": {}, "rate_limit": {}, "total": len(records)}
 
-            return {"success": True, "data": [], "error": None, "raw": {}}
+            return {"success": True, "data": [], "error": None, "raw": {}, "api_info": {}, "rate_limit": {}, "total": 0}
 
         except requests.exceptions.Timeout:
             last_error = f"Request timed out (attempt {attempt + 1}/3). The API is slow — try again."
@@ -176,27 +187,46 @@ def query_api(api_key: str, search_type: str, query: str, timeout: int = 90) -> 
 # ── Response normalisers ────────────────────────────────────────────────────
 
 def _normalise_response(raw) -> list:
-    """Normalise various API response formats into a list of credential dicts."""
+    """
+    Normalise various API response formats into a list of credential dicts.
+
+    Handles the ZeroLeak structure:
+      { "status": "success", "results": { "total": N, "data": [...] }, ... }
+    """
     records = []
 
     if isinstance(raw, list):
         for item in raw:
             records.append(_normalise_record(item))
+
     elif isinstance(raw, dict):
-        # Check common wrapper keys
-        for key in ("data", "results", "records", "leaks", "breaches", "credentials", "items"):
-            if key in raw and isinstance(raw[key], list):
-                for item in raw[key]:
+        # ── Priority 1: results.data (ZeroLeak actual format) ──────────────
+        results_block = raw.get("results")
+        if isinstance(results_block, dict):
+            data_list = results_block.get("data") or results_block.get("records") or []
+            if isinstance(data_list, list):
+                for item in data_list:
                     records.append(_normalise_record(item))
                 return records
-        # Single-key dict whose value is a list
+
+        # ── Priority 2: top-level list under common keys ────────────────────
+        for key in ("data", "records", "leaks", "breaches", "credentials", "items", "results"):
+            val = raw.get(key)
+            if isinstance(val, list):
+                for item in val:
+                    records.append(_normalise_record(item))
+                return records
+
+        # ── Priority 3: any single key whose value is a list ───────────────
         list_values = [(k, v) for k, v in raw.items() if isinstance(v, list)]
         if len(list_values) == 1:
             for item in list_values[0][1]:
                 records.append(_normalise_record(item))
             return records
-        # Single record
+
+        # ── Priority 4: treat the whole dict as a single record ─────────────
         records.append(_normalise_record(raw))
+
     elif isinstance(raw, str):
         records = _parse_text_response(raw)
 

@@ -544,6 +544,9 @@ def page_search():
         st.session_state["last_query"] = query.strip()
         st.session_state["last_search_type"] = api_type
         st.session_state["last_raw"] = result["raw"]
+        st.session_state["last_api_info"] = result.get("api_info", {})
+        st.session_state["last_rate_limit"] = result.get("rate_limit", {})
+        st.session_state["last_total"] = result.get("total", len(records))
 
     # Display results
     records = st.session_state.get("last_results", [])
@@ -560,11 +563,29 @@ def page_search():
     emp_records = [r for r in records if r["type"] == "Employee"]
     user_records = [r for r in records if r["type"] == "User"]
     weak_in_results = [r for r in records if r.get("strength_score", 4) <= 1]
+    api_total = st.session_state.get("last_total", len(records))
+    rate_limit = st.session_state.get("last_rate_limit", {})
+    api_info = st.session_state.get("last_api_info", {})
 
-    # Summary KPIs
+    # Rate limit / API info banner
+    if rate_limit:
+        remaining = rate_limit.get("remaining", "?")
+        limit = rate_limit.get("limit", "?")
+        user_name = api_info.get("user", "")
+        expires = api_info.get("expires", "")
+        st.markdown(f"""
+        <div class="info-banner" style="font-size:12px; padding:8px 14px;">
+            📡 API: <strong>{user_name}</strong> &nbsp;|&nbsp;
+            Expires: <strong>{expires}</strong> &nbsp;|&nbsp;
+            Rate limit: <strong>{remaining}/{limit}</strong> remaining &nbsp;|&nbsp;
+            Total in DB: <strong>{api_total:,}</strong> records
+        </div>
+        """, unsafe_allow_html=True)
+
+    # Summary KPIs (showing counts of what's loaded in this page)
     ck1, ck2, ck3, ck4 = st.columns(4)
     with ck1:
-        st.markdown(kpi_card("💥", len(records), "Total Results"), unsafe_allow_html=True)
+        st.markdown(kpi_card("💥", f"{api_total:,}", "Total in DB"), unsafe_allow_html=True)
     with ck2:
         st.markdown(kpi_card("👔", len(emp_records), "Employee Accounts"), unsafe_allow_html=True)
     with ck3:
