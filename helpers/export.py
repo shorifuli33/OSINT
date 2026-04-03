@@ -1,0 +1,198 @@
+"""
+Nahidx001 - Export Utilities
+Handles CSV, JSON, and PDF export of search results.
+"""
+
+import csv
+import json
+import io
+from datetime import datetime
+
+
+def export_csv(records: list) -> str:
+    """Export records to CSV string."""
+    output = io.StringIO()
+    if not records:
+        return ""
+    fieldnames = ["username", "password", "url", "type", "strength"]
+    writer = csv.DictWriter(output, fieldnames=fieldnames, extrasaction="ignore")
+    writer.writeheader()
+    for r in records:
+        writer.writerow(r)
+    return output.getvalue()
+
+
+def export_json(records: list) -> str:
+    """Export records to formatted JSON string."""
+    return json.dumps(records, indent=2, ensure_ascii=False)
+
+
+def generate_pdf_bytes(records: list, query: str, search_type: str) -> bytes:
+    """
+    Generate a PDF report from search results.
+    Falls back to a simple text-based PDF if weasyprint is not available.
+    """
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    total = len(records)
+    emp = sum(1 for r in records if r.get("type") == "Employee")
+    usr = total - emp
+
+    html = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="utf-8">
+        <style>
+            body {{
+                font-family: 'Segoe UI', Arial, sans-serif;
+                background: #0a0a0f;
+                color: #e0e0e0;
+                padding: 40px;
+                font-size: 12px;
+            }}
+            .header {{
+                text-align: center;
+                border-bottom: 2px solid #ff2d55;
+                padding-bottom: 20px;
+                margin-bottom: 30px;
+            }}
+            .header h1 {{
+                color: #ff2d55;
+                font-size: 28px;
+                margin: 0;
+            }}
+            .header .tagline {{
+                color: #888;
+                font-size: 12px;
+            }}
+            .meta {{
+                display: flex;
+                justify-content: space-between;
+                margin-bottom: 20px;
+                padding: 12px;
+                background: #12121a;
+                border-radius: 6px;
+            }}
+            .meta span {{
+                color: #aaa;
+            }}
+            .meta strong {{
+                color: #ff2d55;
+            }}
+            table {{
+                width: 100%;
+                border-collapse: collapse;
+                margin-top: 20px;
+            }}
+            th {{
+                background: #ff2d55;
+                color: #fff;
+                padding: 10px 8px;
+                text-align: left;
+                font-size: 11px;
+                text-transform: uppercase;
+            }}
+            td {{
+                padding: 8px;
+                border-bottom: 1px solid #1a1a2e;
+                word-break: break-all;
+                font-size: 11px;
+            }}
+            tr:nth-child(even) {{
+                background: #0f0f18;
+            }}
+            .footer {{
+                text-align: center;
+                margin-top: 30px;
+                color: #555;
+                font-size: 10px;
+            }}
+            .weak {{ color: #ff2d55; }}
+            .fair {{ color: #ffb800; }}
+            .strong {{ color: #34c759; }}
+        </style>
+    </head>
+    <body>
+        <div class="header">
+            <h1>Nahidx001</h1>
+            <div class="tagline">ZeroLeak Threat Intelligence Dashboard</div>
+        </div>
+        <div class="meta">
+            <span>Search Type: <strong>{search_type.upper()}</strong></span>
+            <span>Query: <strong>{query}</strong></span>
+            <span>Date: <strong>{timestamp}</strong></span>
+        </div>
+        <div class="meta">
+            <span>Total Results: <strong>{total}</strong></span>
+            <span>Employee Breaches: <strong>{emp}</strong></span>
+            <span>User Breaches: <strong>{usr}</strong></span>
+        </div>
+        <table>
+            <thead>
+                <tr>
+                    <th>#</th>
+                    <th>Username</th>
+                    <th>Password</th>
+                    <th>URL</th>
+                    <th>Type</th>
+                    <th>Strength</th>
+                </tr>
+            </thead>
+            <tbody>
+    """
+
+    for i, r in enumerate(records, 1):
+        strength = r.get("strength", "N/A")
+        cls = "weak"
+        if strength in ("Strong", "Very Strong"):
+            cls = "strong"
+        elif strength == "Fair":
+            cls = "fair"
+        html += f"""
+                <tr>
+                    <td>{i}</td>
+                    <td>{_esc(r.get('username', ''))}</td>
+                    <td>{_esc(r.get('password', ''))}</td>
+                    <td>{_esc(r.get('url', ''))}</td>
+                    <td>{_esc(r.get('type', ''))}</td>
+                    <td class="{cls}">{_esc(strength)}</td>
+                </tr>"""
+
+    html += """
+            </tbody>
+        </table>
+        <div class="footer">
+            Generated by Nahidx001 - ZeroLeak Threat Intelligence Dashboard | CONFIDENTIAL
+        </div>
+    </body>
+    </html>
+    """
+
+    # Try weasyprint first, fall back to xhtml2pdf
+    try:
+        from weasyprint import HTML
+        return HTML(string=html).write_pdf()
+    except ImportError:
+        pass
+
+    try:
+        from xhtml2pdf import pisa
+        output = io.BytesIO()
+        pisa.CreatePDF(html, dest=output)
+        return output.getvalue()
+    except ImportError:
+        pass
+
+    # Final fallback: return HTML as bytes (user can open in browser)
+    return html.encode("utf-8")
+
+
+def _esc(text: str) -> str:
+    """Escape HTML entities."""
+    return (
+        str(text)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+    )
