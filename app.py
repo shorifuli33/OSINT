@@ -603,10 +603,10 @@ def page_search():
     with ecol3:
         api_type_for_pdf = st.session_state.get("last_search_type", "url")
         pdf_bytes = generate_pdf_bytes(records, query_display, api_type_for_pdf)
-        ext = "pdf" if pdf_bytes[:4] == b"%PDF" else "html"
-        st.download_button("📥 PDF", data=pdf_bytes,
-                           file_name=f"nahidx001_{query_display}.{ext}",
-                           mime="application/pdf" if ext == "pdf" else "text/html",
+        st.download_button("📥 PDF (HTML)", data=pdf_bytes,
+                           file_name=f"nahidx001_{query_display}_report.html",
+                           mime="text/html",
+                           help="Open in browser → Ctrl+P → Save as PDF",
                            use_container_width=True)
 
     # ── Results table ──

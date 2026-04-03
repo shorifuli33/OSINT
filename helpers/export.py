@@ -168,22 +168,7 @@ def generate_pdf_bytes(records: list, query: str, search_type: str) -> bytes:
     </html>
     """
 
-    # Try weasyprint first, fall back to xhtml2pdf
-    try:
-        from weasyprint import HTML
-        return HTML(string=html).write_pdf()
-    except ImportError:
-        pass
-
-    try:
-        from xhtml2pdf import pisa
-        output = io.BytesIO()
-        pisa.CreatePDF(html, dest=output)
-        return output.getvalue()
-    except ImportError:
-        pass
-
-    # Final fallback: return HTML as bytes (user can open in browser)
+    # Return as HTML — user opens in browser and uses Ctrl+P → Save as PDF
     return html.encode("utf-8")
 
 
