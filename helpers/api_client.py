@@ -28,21 +28,21 @@ def _solve_aes_challenge(html: str) -> str:
     """
     Parse the slowAES JS challenge and compute the __test cookie value.
 
-    The page contains:
-        var a = toNumbers("IV_HEX")
-        var b = toNumbers("KEY_HEX")
-        var c = toNumbers("CIPHERTEXT_HEX")
-        slowAES.decrypt(c, 2, a, b)  →  cookie = hex(AES-CBC-decrypt(c, key=b, iv=a))
+    The JS calls: slowAES.decrypt(c, 2, a, b)
+    slowAES.decrypt signature: (ciphertext, mode, key, iv)
+      → a = KEY, b = IV, c = CIPHERTEXT
+      → cookie = hex(AES-CBC-decrypt(ciphertext=c, key=a, iv=b))
     """
     matches = re.findall(r'toNumbers\("([0-9a-fA-F]+)"\)', html)
     if len(matches) < 3:
         return ""
-    iv_hex, key_hex, ct_hex = matches[0], matches[1], matches[2]
+    # Variables appear in order: a, b, c
+    a_hex, b_hex, c_hex = matches[0], matches[1], matches[2]
     try:
         from Crypto.Cipher import AES
-        key = bytes.fromhex(key_hex)
-        iv  = bytes.fromhex(iv_hex)
-        ct  = bytes.fromhex(ct_hex)
+        key = bytes.fromhex(a_hex)   # a = key
+        iv  = bytes.fromhex(b_hex)   # b = iv
+        ct  = bytes.fromhex(c_hex)   # c = ciphertext
         cipher = AES.new(key, AES.MODE_CBC, iv)
         return cipher.decrypt(ct).hex()
     except Exception:
